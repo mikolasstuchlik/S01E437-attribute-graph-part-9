@@ -1,8 +1,21 @@
 import AttributeGraph
 import SwiftUI
 
+
+struct Offset<T>: Identifiable {
+    let value: T
+    let offset: Int
+
+    var id: String { "\(value)%%%\(offset)" }
+}
+
+extension EnumeratedSequence<[String]> {
+    func ident() -> [Offset<String>] { self.map { .init(value: $1, offset: $0) } }
+}
+
+
 struct Sample: View {
-    @State var snapshots: [(String, GraphValue)] = []
+    @State var snapshots: [([String], GraphValue)] = []
     @State var index: Int = 0
 
     var body: some View {
@@ -10,7 +23,17 @@ struct Sample: View {
             if index >= 0, index < snapshots.count {
                 Graphviz(dot: snapshots[index].1.dot)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Text(snapshots[index].0)
+                VStack {
+                    ForEach(snapshots[index].0.reversed().enumerated().ident()) { item in
+                        Text(item.value)
+                            .fontWeight( item.offset == 0 ? .bold : .regular )
+                    }
+                    Text("Bottom of the stack")
+                        .fontWeight(.light)
+                        .padding(.top, 10)
+                }
+                .padding()
+                .border(Color.white)
             }
             Stepper(value: $index, label: {
                 Text("Step \(index + 1)/\(snapshots.count)")
@@ -226,7 +249,7 @@ func run<V: MyView>(_ view: V, inputSize: Node<CGSize>) -> ViewOutputs {
     return V.makeView(node: rootNode, inputs: rootInputs)
 }
 
-func sample() -> [(String, GraphValue)] {
+func sample() -> [([String], GraphValue)] {
     /*
      struct Nested: View {
      @State var toggle = false
@@ -242,7 +265,7 @@ func sample() -> [(String, GraphValue)] {
      }
      */
 
-    var result: [(String, GraphValue)] = []
+    var result: [([String], GraphValue)] = []
 
     let graph = AttributeGraph {
         result.append(($0, $1.snapshot()))

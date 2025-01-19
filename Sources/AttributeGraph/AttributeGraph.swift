@@ -1,13 +1,16 @@
 // Based on https://www.semanticscholar.org/paper/A-System-for-Efficient-and-Flexible-One-Way-in-C%2B%2B-Hudson/9609985dbef43633f4deb88c949a9776e0cd766b
 // https://repository.gatech.edu/server/api/core/bitstreams/3117139f-5de2-4f1f-9662-8723bae97a6d/content
 
+import struct Foundation.UUID
+
 public final class AttributeGraph {
     var nodes: [AnyNode] = []
     var evalNodesStack: [AnyNode] = []
 
-    var onChange: (String, AttributeGraph) -> Void
+    private var transactionStack: [(String, UUID)] = []
+    var onChange: ([String], AttributeGraph) -> Void
 
-    public init(onChange: @escaping (String, AttributeGraph) -> Void) {
+    public init(onChange: @escaping ([String], AttributeGraph) -> Void) {
         self.onChange = onChange
     }
 
@@ -28,7 +31,13 @@ public final class AttributeGraph {
     }
 
     func transaction<T>(_ note: String = #function, _ block: () -> T) -> T {
-        defer { onChange(note, self) }
+        let uuid = UUID()
+        defer {
+            onChange(transactionStack.map(\.0), self)
+            assert(transactionStack.last?.1 == uuid)
+            transactionStack.removeLast()
+        }
+        transactionStack.append((note, uuid))
         return block()
     }
 
@@ -104,9 +113,9 @@ public final class Node<A>: AnyNode, Identifiable {
             if newValue {
                 graph.transaction("\(name) set dirty") {
                     _potentiallyDirty = newValue
-                }
-                for e in outgoingEdges {
-                    e.to.potentiallyDirty = true
+                    for e in outgoingEdges {
+                        e.to.potentiallyDirty = true
+                    }
                 }
             } else {
                 _potentiallyDirty = newValue
@@ -122,14 +131,16 @@ public final class Node<A>: AnyNode, Identifiable {
 
     public var wrappedValue: A {
         get {
-            recomputeIfNeeded()
-            return _cachedValue!
+            graph.transaction("\(name) wrapped: get") {
+                recomputeIfNeeded()
+                return _cachedValue!
+            }
         }
         set {
             assert(rule == nil)
             _cachedValue = newValue
             for e in outgoingEdges {
-                graph.transaction("\(name) wrappedValue: set") {
+                graph.transaction("\(name) wrapped: set \(newValue)") {
                     e.pending = true
                     e.to.potentiallyDirty = true
                 }
@@ -163,8 +174,10 @@ public final class Node<A>: AnyNode, Identifiable {
 
         if !potentiallyDirty && _cachedValue != nil { return }
 
-        for edge in incomingEdges {
-            edge.from.recomputeIfNeeded()
+        graph.transaction("\(name) recompute edge nodes") {
+            for edge in incomingEdges {
+                edge.from.recomputeIfNeeded()
+            }
         }
 
         let hasPendingIncomingEdge = incomingEdges.contains(where: \.pending)
