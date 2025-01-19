@@ -2,18 +2,19 @@ import AttributeGraph
 import SwiftUI
 
 struct Sample: View {
-    @State var snapshots: [GraphValue] = []
+    @State var snapshots: [(String, GraphValue)] = []
     @State var index: Int = 0
 
     var body: some View {
         VStack {
             if index >= 0, index < snapshots.count {
-                Graphviz(dot: snapshots[index].dot)
+                Graphviz(dot: snapshots[index].1.dot)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Stepper(value: $index, label: {
-                    Text("Step \(index + 1)/\(snapshots.count)")
-                })
+                Text(snapshots[index].0)
             }
+            Stepper(value: $index, label: {
+                Text("Step \(index + 1)/\(snapshots.count)")
+            })
         }
         .padding()
         .onAppear {
@@ -225,7 +226,7 @@ func run<V: MyView>(_ view: V, inputSize: Node<CGSize>) -> ViewOutputs {
     return V.makeView(node: rootNode, inputs: rootInputs)
 }
 
-func sample() -> [GraphValue] {
+func sample() -> [(String, GraphValue)] {
     /*
      struct Nested: View {
      @State var toggle = false
@@ -241,24 +242,23 @@ func sample() -> [GraphValue] {
      }
      */
 
-    let graph = AttributeGraph()
+    var result: [(String, GraphValue)] = []
+
+    let graph = AttributeGraph {
+        result.append(($0, $1.snapshot()))
+    }
     let rootSize = graph.input(name: "inputSize", CGSize(width: 200, height: 100))
     let colorValue = MyColor(name: "blue")
         .frame(width: 60, height: 60)
     let outputs = run(colorValue, inputSize: rootSize)
     let displayList = outputs.displayList
 
-    var result: [GraphValue] = []
-    result.append(graph.snapshot())
 
     let _ = displayList.wrappedValue
-    result.append(graph.snapshot())
 
     rootSize.wrappedValue.width = 300
-    result.append(graph.snapshot())
 
     let _ = displayList.wrappedValue
-    result.append(graph.snapshot())
 
     return result
 }

@@ -3,39 +3,48 @@
 
 public final class AttributeGraph {
     var nodes: [AnyNode] = []
-    var currentNode: AnyNode?
-    public init() { } 
+    var evalNodesStack: [AnyNode] = []
+
+    var onChange: (String, AttributeGraph) -> Void
+
+    public init(onChange: @escaping (String, AttributeGraph) -> Void) {
+        self.onChange = onChange
+    }
 
     public func input<A>(name: String, _ value: A) -> Node<A> {
-        let n = Node(name: name, in: self, wrappedValue: value)
-        nodes.append(n)
-        return n
+        transaction {
+            let n = Node(name: name, in: self, wrappedValue: value)
+            nodes.append(n)
+            return n
+        }
     }
 
     public func rule<A>(name: String, _ rule: @escaping () -> A) -> Node<A> {
-        let n = Node(name: name, in: self, rule: rule)
-        nodes.append(n)
-        return n
+        transaction {
+            let n = Node(name: name, in: self, rule: rule)
+            nodes.append(n)
+            return n
+        }
     }
 
-    func graphViz() -> String {
-        let nodesStr = nodes.map {
-            "\($0.name)\($0.potentiallyDirty ? " [style=dashed]" : "")"
-        }.joined(separator: "\n")
-        let edges = nodes.flatMap(\.outgoingEdges).map {
-            "\($0.from.name) -> \($0.to.name)\($0.pending ? " [style=dashed]" : "")"
-        }.joined(separator: "\n")
-        return """
-        digraph {
-        \(nodesStr)
-        \(edges)
-        }
-        """
+    func transaction<T>(_ note: String = #function, _ block: () -> T) -> T {
+        defer { onChange(note, self) }
+        return block()
     }
 
     public func snapshot() -> GraphValue {
         GraphValue(
-            nodes: nodes.map { NodeValue(id: $0.id, name: $0.name, potentiallyDirty: $0.potentiallyDirty, value: $0.debugValue)},
+            nodes: nodes
+                .map { node in
+                    NodeValue(
+                        id: node.id,
+                        name: node.name,
+                        potentiallyDirty: node.potentiallyDirty,
+                        value: node.debugValue,
+                        isRule: node.hasRule,
+                        isCurrent: evalNodesStack.contains { node === $0 }
+                    )
+                },
             edges: nodes.flatMap { node in
                 node.outgoingEdges.map {
                     EdgeValue(from: $0.from.id, to: $0.to.id, pending: $0.pending)
@@ -53,6 +62,7 @@ protocol AnyNode: AnyObject {
     var id: NodeID { get }
     var debugValue: String { get }
 
+    var hasRule: Bool { get }
     func recomputeIfNeeded()
 }
 
@@ -64,6 +74,10 @@ public final class Edge {
     init(from: AnyNode, to: AnyNode) {
         self.from = from
         self.to = to
+    }
+
+    static func ~=(lhs: Edge, rhs: Edge) -> Bool {
+        lhs.from === rhs.from && lhs.to === rhs.to
     }
 }
 
@@ -77,11 +91,25 @@ public final class Node<A>: AnyNode, Identifiable {
     var outgoingEdges: [Edge] = []
     public var id: NodeID { ObjectIdentifier(self) }
 
-    public var potentiallyDirty: Bool = false {
-        didSet {
-            guard potentiallyDirty, potentiallyDirty != oldValue else { return }
-            for e in outgoingEdges {
-                e.to.potentiallyDirty = true
+    var hasRule: Bool { rule != nil }
+
+    public var _potentiallyDirty: Bool = false
+    public var potentiallyDirty: Bool {
+        get { _potentiallyDirty }
+        set {
+            guard newValue != _potentiallyDirty else {
+                return
+            }
+
+            if newValue {
+                graph.transaction("\(name) set dirty") {
+                    _potentiallyDirty = newValue
+                }
+                for e in outgoingEdges {
+                    e.to.potentiallyDirty = true
+                }
+            } else {
+                _potentiallyDirty = newValue
             }
         }
     }
@@ -101,18 +129,34 @@ public final class Node<A>: AnyNode, Identifiable {
             assert(rule == nil)
             _cachedValue = newValue
             for e in outgoingEdges {
-                e.pending = true
-                e.to.potentiallyDirty = true
+                graph.transaction("\(name) wrappedValue: set") {
+                    e.pending = true
+                    e.to.potentiallyDirty = true
+                }
             }
         }
     }
 
     func recomputeIfNeeded() {
         // record dependency
-        if let c = graph.currentNode {
+        if let c = graph.evalNodesStack.last {
             let edge = Edge(from: self, to: c)
-            outgoingEdges.append(edge)
-            c.incomingEdges.append(edge)
+
+            if
+                let outE = outgoingEdges.first(where: { $0 ~= edge} ),
+                let inE = c.incomingEdges.first(where: { $0 ~= edge } )
+            {
+                graph.transaction("\(name) rec: resetting edge") {
+                    assert(outE === inE)
+                    outE.pending = false
+                }
+            } else {
+                graph.transaction("\(name) rec: adding edge") {
+                    outgoingEdges.append(edge)
+                    c.incomingEdges.append(edge)
+                }
+            }
+
         }
 
         guard let rule else { return }
@@ -127,26 +171,30 @@ public final class Node<A>: AnyNode, Identifiable {
         potentiallyDirty = false
 
         if hasPendingIncomingEdge || _cachedValue == nil {
-            let previousNode = graph.currentNode
-            defer { graph.currentNode = previousNode }
-            graph.currentNode = self
+            defer {
+                graph.transaction("\(name) rec: pop") {
+                    assert(graph.evalNodesStack.last === self)
+                    graph.evalNodesStack.removeLast()
+                }
+            }
+            graph.transaction("\(name) rec: push") {
+                graph.evalNodesStack.append(self)
+            }
+
             let isInitial = _cachedValue == nil
-            removeIncomingEdges()
-            _cachedValue = rule()
+
+            graph.transaction("\(name) rec: evaluate rule") {
+                _cachedValue = rule()
+            }
             // TODO only if _cachedValue has changed
             if !isInitial {
                 for o in outgoingEdges {
-                    o.pending = true
+                    graph.transaction("\(name) rec: no-pending") {
+                        o.pending = true
+                    }
                 }
             }
         }
-    }
-
-    func removeIncomingEdges() {
-        for e in incomingEdges {
-            e.from.outgoingEdges.removeAll(where: { $0 === e })
-        }
-        incomingEdges = []
     }
 
     init(name: String, in graph: AttributeGraph, wrappedValue: A) {

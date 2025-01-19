@@ -8,6 +8,8 @@ public struct NodeValue {
     public var name: String
     public var potentiallyDirty: Bool
     public var value: String
+    public var isRule: Bool
+    public var isCurrent: Bool
 }
 
 public struct EdgeValue {
@@ -30,7 +32,7 @@ extension String {
 
 extension NodeValue {
     public var dot: String {
-        "\(id.dotID) [label=\"\(name) (\(value.escaped))\", style=\(potentiallyDirty ? "filled" : "solid"), shape=rect]"
+        "\(id.dotID) [label=\"\(name) (\(value.escaped))\", style=\(potentiallyDirty ? "dashed" : "solid")\(isRule ? ", shape=rect" : "")\(isCurrent ? ", color=red" : "")]"
     }
 }
 
@@ -44,6 +46,8 @@ extension GraphValue {
     public var dot: String {
         """
         digraph {
+        node [color=white, fontcolor=white]
+        edge [color=white]
         \(nodes.map(\.dot).joined(separator: "\n"))
         \(edges.map(\.dot).joined(separator: "\n"))
         }
